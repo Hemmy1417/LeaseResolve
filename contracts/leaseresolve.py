@@ -635,6 +635,21 @@ def _unconfirmed(theirs: dict, mine: dict, ids: list) -> str:
     return ""
 
 
+def _unsupported(theirs: dict, ctx: dict, read: set) -> str:
+    """Why the leader's cited basis does not hold up under this validator's own
+    reading, or "". The basis is written into the record, so a validator must
+    be able to stand behind it: every finding the leader made has to be
+    grounded by the leader's citations on the photographs THIS node saw."""
+    basis = theirs.get("basis") if isinstance(theirs.get("basis"), dict) else {}
+    for d in ctx["disputed"]:
+        cited = basis.get(d["id"])
+        cited = [e for e in cited if isinstance(e, str)] if isinstance(cited, list) else []
+        f = theirs["findings"].get(d["id"])
+        if _ground(f, cited, d["room_id"], ctx["meta"], read) != f:
+            return f"{d['id']}: the leader's basis does not ground {f} on what this validator read"
+    return ""
+
+
 def _bond_for(disputed_wei: int) -> int:
     return max(MIN_APPEAL_BOND_WEI, int(disputed_wei) * APPEAL_BOND_BPS // 10_000)
 
@@ -1348,27 +1363,28 @@ class LeaseResolve(gl.contract.Contract):
             allowed.append("APPEAL")
         items = [it for it in self._items_of(lease) if it["phase"] in allowed]
         meta = {it["item_id"]: it for it in items}
-        # The photographs, ordered so that a move-in picture of a room travels
-        # beside the move-out picture it is to be compared with.
-        order = []
-
-        def add(eid):
-            if eid and eid in meta and meta[eid]["kind"] == "PHOTO" and eid not in order:
-                order.append(eid)
-
+        # The photographs, in prompts of at most two. A prompt only ever holds
+        # one filer's photographs of one room: the landlord's move-in picture
+        # beside the landlord's move-out picture, the tenant's move-in picture
+        # beside the tenant's answer. So a file the runtime refuses fails only
+        # its own filer's prompt, and the pictures a comparison needs travel
+        # together. A baseline shared by two deductions is read again beside
+        # each; the first reading of it is the one kept.
+        groups = []
         for d in disputed:
-            room = d["room_id"]
             base = {it["role"]: it["item_id"] for it in items
                     if it["phase"] == "BASELINE" and it["kind"] == "PHOTO"
-                    and it["room_id"] == room}
-            add(base.get("LANDLORD"))
-            add(d["photo"])
-            add(base.get("TENANT"))
-            add(d["answer_photo"])
+                    and it["room_id"] == d["room_id"]}
+            for group in ([base.get("LANDLORD"), d["photo"]], [base.get("TENANT"), d["answer_photo"]]):
+                group = [e for e in group if e and e in meta]
+                if group:
+                    groups.append(group)
             for it in items:
                 if it["phase"] == "APPEAL" and it["kind"] == "PHOTO" and it["deduction_id"] == d["id"]:
-                    add(it["item_id"])
-        groups = [order[i:i + IMAGES_PER_PROMPT] for i in range(0, len(order), IMAGES_PER_PROMPT)]
+                    groups.append([it["item_id"]])
+        order = []
+        for group in groups:
+            order += [e for e in group if e not in order]
         notes = {it["item_id"]: self.item_text[it["item_id"]] for it in items if it["kind"] == "NOTE"}
         photos = {eid: self.item_bytes[eid] for eid in order}
         return {"kind": kind, "lease": lease, "rooms": rooms, "meta": meta, "notes": notes,
@@ -1449,6 +1465,7 @@ class LeaseResolve(gl.contract.Contract):
             out, refused = self._ask_about(self._look_prompt(ctx, group),
                                            [ctx["photos"][e] for e in group])
             rows = _readings(out, len(group))
+            here = {}
             for n, eid in enumerate(group, start=1):
                 row = rows.get(n, {})
                 readable = row.get("readable") is True \
@@ -1456,6 +1473,9 @@ class LeaseResolve(gl.contract.Contract):
                 set_aside = refused or row.get("readable") is False
                 if not readable and not set_aside:
                     received = False
+                here[eid] = readable
+                if eid in readings:
+                    continue
                 marks = row.get("marks") if isinstance(row.get("marks"), list) else []
                 readings[eid] = {
                     "item_id": eid, "readable": readable,
@@ -1463,7 +1483,7 @@ class LeaseResolve(gl.contract.Contract):
                     "marks": [_clean(x, LINE_MAX) for x in marks if isinstance(x, str)][:8]
                     if readable else [],
                 }
-            if len(group) == 2 and isinstance(out, dict) and all(readings[e]["readable"] for e in group):
+            if len(group) == 2 and isinstance(out, dict) and all(here.values()):
                 compares.append({"items": list(group), "compare": _clean(out.get("compare"), LONG_MAX)})
         return readings, compares, received
 
@@ -1522,8 +1542,9 @@ class LeaseResolve(gl.contract.Contract):
             "- PRE_EXISTING: the move-in evidence of that room shows the condition was "
             "already there.\n"
             "- FAIR_WEAR: the condition is ordinary wear the rule above allows.\n"
-            "- REPORTED_UNREPAIRED: the tenant reported the problem in a notice during the "
-            "tenancy and the evidence does not show it was repaired.\n"
+            "- REPORTED_UNREPAIRED: the tenant reported this same problem in a notice during "
+            "the tenancy and the evidence does not show it was repaired. A notice that does "
+            "not describe this condition is not a report of it.\n"
             "- NOT_SHOWN: the evidence does not establish the claim.\n"
             "basis: the ids of the items your finding rests on. Damage is a change, so a "
             "TENANT_DAMAGE finding must cite a move-in photograph of the room and a "
@@ -1538,7 +1559,7 @@ class LeaseResolve(gl.contract.Contract):
         readings, compares, received = self._look_all(ctx)
         if not received:
             return {"images_received": False, "findings": {}, "basis": {}, "notes": {},
-                    "reasoning": "", "unread": []}
+                    "reasoning": "", "read": []}
         raw = gl.nondet.exec_prompt(self._judge_prompt(ctx, readings, compares),
                                     response_format="json")
         out = _llm_object(raw, "the judgment")
@@ -1561,7 +1582,7 @@ class LeaseResolve(gl.contract.Contract):
             notes[d["id"]] = _clean(row.get("note"), LINE_MAX)
         return {"images_received": True, "findings": findings, "basis": basis, "notes": notes,
                 "reasoning": _clean(out.get("reasoning"), LONG_MAX),
-                "unread": sorted(e for e in readings if e not in read)}
+                "read": sorted(read)}
 
     def _run_round(self, lease: dict, kind: str) -> dict:
         """One round under consensus. A validator agrees only when both it and
@@ -1595,7 +1616,8 @@ class LeaseResolve(gl.contract.Contract):
             if not mine["images_received"]:
                 print("[DISAGREE] this validator did not read the photographs")
                 return False
-            why = _unconfirmed(theirs["findings"], mine["findings"], ids)
+            why = _unconfirmed(theirs["findings"], mine["findings"], ids) \
+                or _unsupported(theirs, ctx, set(mine["read"]))
             if why:
                 print("[DISAGREE] " + why)
                 return False
@@ -1613,9 +1635,9 @@ class LeaseResolve(gl.contract.Contract):
         if not isinstance(result, dict) or result.get("images_received") is not True \
                 or not isinstance(result.get("findings"), dict):
             raise gl.vm.UserError(bad)
-        unread = [e for e in (result.get("unread") or []) if e in ctx["photos"]] \
-            if isinstance(result.get("unread"), list) else []
-        read = {e for e in ctx["photos"] if e not in unread}
+        # Validators checked the cited basis against what they themselves read,
+        # so here any photograph the round held may stand behind a finding.
+        read = set(ctx["photos"])
         basis_in = result.get("basis") if isinstance(result.get("basis"), dict) else {}
         notes_in = result.get("notes") if isinstance(result.get("notes"), dict) else {}
         rows = []
@@ -1630,8 +1652,7 @@ class LeaseResolve(gl.contract.Contract):
             rows.append({"id": d["id"], "room_id": d["room_id"], "finding": f,
                          "to": _payee(f), "amount_wei": d["amount_wei"], "basis": cited,
                          "note": _clean(notes_in.get(d["id"]), LINE_MAX)})
-        return {"rows": rows, "unread": unread,
-                "reasoning": _clean(result.get("reasoning"), LONG_MAX)}
+        return {"rows": rows, "reasoning": _clean(result.get("reasoning"), LONG_MAX)}
 
     def _record(self, lease: dict, kind: str, out: dict) -> dict:
         """What the round decided and, by digest, exactly what it read: so the
@@ -1639,9 +1660,11 @@ class LeaseResolve(gl.contract.Contract):
         which of it was new."""
         n = int(lease["round_count"]) + 1
         lease["round_count"] = n
-        ctx_items = self._round_context(lease, kind)["meta"]
+        ctx = self._round_context(lease, kind)
+        ctx_items = {e: it for e, it in ctx["meta"].items()
+                     if e in ctx["photos"] or e in ctx["notes"]}
         record = {"n": n, "kind": kind, "at": _iso(_now()), "ruleset": RULESET_VERSION,
-                  "deductions": out["rows"], "unread": out["unread"],
+                  "deductions": out["rows"],
                   "reasoning": out["reasoning"],
                   "read": [{"item_id": e, "kind": it["kind"], "phase": it["phase"],
                             "role": it["role"], "room_id": it["room_id"], "sha256": it["sha256"]}

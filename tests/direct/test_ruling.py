@@ -33,9 +33,10 @@ class TestTheReading:
         lid, ids, _ = disputed(module, c, n=2, tenant_answer_photo=True)
         reset_prompts()
         rule(module, c, lid, judgment({"D1": "NOT_SHOWN", "D2": "NOT_SHOWN"}))
-        # D1: bl_r1 + out_D1, then the tenant's answer photo; D2: bl_r2 + out_D2 + answer.
-        assert [p["images"] for p in prompts("look", "leader")] == [2, 2, 2]
-        assert [p["images"] for p in prompts("look", "validator")] == [2, 2, 2]
+        # One filer's photographs of one room per prompt: the landlord's move-in
+        # beside the landlord's move-out, then the tenant's answer on its own.
+        assert [p["images"] for p in prompts("look", "leader")] == [2, 1, 2, 1]
+        assert [p["images"] for p in prompts("look", "validator")] == [2, 1, 2, 1]
 
     def test_party_text_cannot_close_a_fence(self, module, c):
         lid, _ = in_tenancy(module, c)
@@ -90,8 +91,6 @@ class TestGrounding:
                            {"n": 2, "readable": True, "shows": "A wall with holes."}]}
         out = rule(module, c, lid, judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)), look=look)
         assert out["deductions"][0]["finding"] == "NOT_SHOWN"
-        r = json.loads(c.get_round(lid, 1))
-        assert r["unread"] == [ids["bl_r1"]]
 
     def test_pre_existing_needs_a_baseline_item_of_the_room(self, module, c):
         lid, ids, _ = disputed(module, c, n=1)
@@ -243,14 +242,6 @@ class TestTheBoundary:
         lid, ids = self.accepted(module, c, {"images_received": True,
                                              "findings": {"D1": "TENANT_DAMAGE"},
                                              "basis": {"D1": []}})
-        with pytest.raises(err(module), match="no usable result"):
-            c.request_ruling(lid)
-
-    def test_damage_on_a_photograph_the_record_says_was_unread_settles_nothing(self, module, c):
-        lid, ids, _ = disputed(module, c, n=1)
-        network_accepts({"images_received": True, "findings": {"D1": "TENANT_DAMAGE"},
-                         "basis": damage_basis(ids), "unread": [ids["bl_r1"]]})
-        as_(module, TENANT)
         with pytest.raises(err(module), match="no usable result"):
             c.request_ruling(lid)
 
