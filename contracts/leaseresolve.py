@@ -865,15 +865,24 @@ class LeaseResolve(gl.contract.Contract):
         self._settle(lease, how)
 
     def _when_nothing_is_disputed(self, lease: dict) -> None:
-        """A concession can leave nothing to rule on. The lease then settles,
-        and an open appeal is moot: its bond goes back to whoever posted it."""
-        if self._disputed(lease) or lease["state"] not in (
-                "AWAITING_RULING", "RULED", "APPEALED"):
-            return
+        """A concession can leave nothing to rule on. The lease then settles.
+
+        An appeal is moot once nothing it contests is still in dispute, however
+        that came about: the appellant has what they appealed for, so the bond
+        goes back, and whatever else is still disputed settles on the standing
+        ruling, which went the appellant's way on it and which nobody else
+        appealed."""
         if lease["state"] == "APPEALED":
             a = lease["appeal"]
+            live = {d["id"] for d in self._disputed(lease)}
+            if any(k in live for k in a["contested"]):
+                return
             self._pay(lease, a["by"], int(a["bond_wei"]))
             a["result"] = "MOOT"
+            self._settle_disputed_by(lease, self._standing_outcomes(lease), "CONCEDED")
+            return
+        if self._disputed(lease) or lease["state"] not in ("AWAITING_RULING", "RULED"):
+            return
         self._settle(lease, "CONCEDED")
 
     def _file(self, lease: dict, role: str, kind: str, phase: str, room_id: str,
@@ -1363,25 +1372,26 @@ class LeaseResolve(gl.contract.Contract):
             allowed.append("APPEAL")
         items = [it for it in self._items_of(lease) if it["phase"] in allowed]
         meta = {it["item_id"]: it for it in items}
-        # The photographs, in prompts of at most two. A prompt only ever holds
-        # one filer's photographs of one room: the landlord's move-in picture
-        # beside the landlord's move-out picture, the tenant's move-in picture
-        # beside the tenant's answer. So a file the runtime refuses fails only
-        # its own filer's prompt, and the pictures a comparison needs travel
-        # together. A baseline shared by two deductions is read again beside
-        # each; the first reading of it is the one kept.
+        # The photographs. Each deduction's move-out picture travels beside a
+        # move-in picture of the same room, the landlord's where there is one,
+        # else the tenant's, so a node can compare them side by side; every
+        # other photograph is read on its own. Pairing is only a convenience:
+        # any photograph a pair fails to read is read again alone, so no file
+        # can cost another its reading.
         groups = []
         for d in disputed:
             base = {it["role"]: it["item_id"] for it in items
                     if it["phase"] == "BASELINE" and it["kind"] == "PHOTO"
                     and it["room_id"] == d["room_id"]}
-            for group in ([base.get("LANDLORD"), d["photo"]], [base.get("TENANT"), d["answer_photo"]]):
-                group = [e for e in group if e and e in meta]
-                if group:
-                    groups.append(group)
+            before = base.get("LANDLORD") or base.get("TENANT")
+            groups.append([e for e in (before, d["photo"]) if e and e in meta])
+            for e in (base.get("TENANT"), d["answer_photo"]):
+                if e and e in meta and e != before:
+                    groups.append([e])
             for it in items:
                 if it["phase"] == "APPEAL" and it["kind"] == "PHOTO" and it["deduction_id"] == d["id"]:
                     groups.append([it["item_id"]])
+        groups = [g for g in groups if g]
         order = []
         for group in groups:
             order += [e for e in group if e not in order]
@@ -1451,40 +1461,57 @@ class LeaseResolve(gl.contract.Contract):
             last = last or got
         return last, failed == 2
 
-    def _look_all(self, ctx: dict) -> tuple:
-        """Every photograph the round holds, two at a time.
+    def _read_group(self, ctx: dict, group: list) -> tuple:
+        """One prompt's readings: {eid: (state, row)} where state is "read",
+        "aside" (the node says plainly it could not read it, or the runtime
+        failed the prompt twice) or "garbled", and the compare text."""
+        out, refused = self._ask_about(self._look_prompt(ctx, group),
+                                       [ctx["photos"][e] for e in group])
+        rows = _readings(out, len(group))
+        got = {}
+        for n, eid in enumerate(group, start=1):
+            row = rows.get(n, {})
+            if row.get("readable") is True and _clean(row.get("shows"), LONG_MAX):
+                got[eid] = ("read", row)
+            elif refused or row.get("readable") is False:
+                got[eid] = ("aside", row)
+            else:
+                got[eid] = ("garbled", row)
+        compare = _clean(out.get("compare"), LONG_MAX) if isinstance(out, dict) else ""
+        return got, compare
 
-        A node counts as a reader of a photograph only when it says so itself.
-        A photograph the node says plainly it could not read, or whose prompt
-        the runtime failed twice, is set aside: it shows nothing to that node,
-        so it cannot ground a finding, and a bad file can only cost the side
-        that filed it. An answer that is merely garbled is the node's own
-        failure, and that node does not vote."""
-        readings, compares, received = {}, [], True
+    def _look_all(self, ctx: dict) -> tuple:
+        """Every photograph the round holds.
+
+        A photograph a pair did not read is read again on its own, and only
+        that solo reading decides it: so a file the runtime refuses, or an
+        answer that loses one picture, can never take another photograph down
+        with it. A photograph counts as read when any reading of it was. One
+        set aside is shown to the judgment as unread and grounds nothing. A
+        photograph whose own solo answer is garbled leaves the node blind,
+        and a blind node does not vote."""
+        readings, compares, settled = {}, [], {}
         for group in ctx["groups"]:
-            out, refused = self._ask_about(self._look_prompt(ctx, group),
-                                           [ctx["photos"][e] for e in group])
-            rows = _readings(out, len(group))
-            here = {}
-            for n, eid in enumerate(group, start=1):
-                row = rows.get(n, {})
-                readable = row.get("readable") is True \
-                    and bool(_clean(row.get("shows"), LONG_MAX))
-                set_aside = refused or row.get("readable") is False
-                if not readable and not set_aside:
-                    received = False
-                here[eid] = readable
-                if eid in readings:
+            got, compare = self._read_group(ctx, group)
+            if len(group) == 2 and all(st == "read" for st, _ in got.values()):
+                compares.append({"items": list(group), "compare": compare})
+            for eid in group:
+                st, row = got[eid]
+                if len(group) == 2 and st != "read":
+                    if settled.get(eid) == "read":
+                        continue
+                    st, row = self._read_group(ctx, [eid])[0][eid]
+                if settled.get(eid) == "read":
                     continue
+                settled[eid] = st
                 marks = row.get("marks") if isinstance(row.get("marks"), list) else []
                 readings[eid] = {
-                    "item_id": eid, "readable": readable,
-                    "shows": _clean(row.get("shows"), LONG_MAX) if readable else "",
+                    "item_id": eid, "readable": st == "read",
+                    "shows": _clean(row.get("shows"), LONG_MAX) if st == "read" else "",
                     "marks": [_clean(x, LINE_MAX) for x in marks if isinstance(x, str)][:8]
-                    if readable else [],
+                    if st == "read" else [],
                 }
-            if len(group) == 2 and isinstance(out, dict) and all(here.values()):
-                compares.append({"items": list(group), "compare": _clean(out.get("compare"), LONG_MAX)})
+        received = all(st != "garbled" for st in settled.values())
         return readings, compares, received
 
     def _judge_prompt(self, ctx: dict, readings: dict, compares: list) -> str:
@@ -1771,7 +1798,8 @@ class LeaseResolve(gl.contract.Contract):
             raise _PayableRefusal(f"send exactly the appeal bond, {bond} wei")
         window = lease["windows"]["appeal"]
         ends = now + timedelta(seconds=window)
-        lease["appeal"] = {"by": role, "reason": text, "bond_wei": str(bond),
+        contested = sorted(k for k, to in self._standing_outcomes(lease).items() if to != role)
+        lease["appeal"] = {"by": role, "reason": text, "bond_wei": str(bond), "contested": contested,
                            "opened_at": _iso(now), "evidence_ends": _iso(ends),
                            "lapse_at": _iso(ends + timedelta(seconds=LONG_STOP_WINDOWS * window)),
                            "result": ""}
@@ -1794,11 +1822,12 @@ class LeaseResolve(gl.contract.Contract):
         a = lease["appeal"]
         if _now() <= _parse_iso(a["evidence_ends"]):
             _refuse("the appeal's evidence period is still open")
-        before = self._standing_outcomes(lease)
         out = self._run_round(lease, "APPEAL")
         record = self._record(lease, "APPEAL", out)
         after = {r["id"]: r["to"] for r in record["deductions"]}
-        moved = any(after[k] == a["by"] and before[k] != a["by"] for k in after)
+        # What the appeal contested was fixed when it was filed; it moved if any
+        # of that still in dispute now goes the appellant's way.
+        moved = any(after.get(k) == a["by"] for k in a["contested"])
         other = "TENANT" if a["by"] == "LANDLORD" else "LANDLORD"
         a["result"] = "MOVED" if moved else "UPHELD"
         a["round"] = record["n"]

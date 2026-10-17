@@ -3,8 +3,9 @@ the code it was written against."""
 import json
 
 from conftest import (  # noqa: F401
-    GEN, LANDLORD, TENANT, _ANSWERS, as_, deduct, disputed, err, forge_leader, in_tenancy,
-    jfif, judgment, lease, llm, look_ok, moved_out,
+    GEN, LANDLORD, TENANT, _ANSWERS, as_, claimable, conserved, deduct, disputed, err,
+    forge_leader, in_tenancy, jfif, judgment, lease, llm, look_ok, moved_out, offered, photo,
+    accept, set_now,
 )
 import pytest
 
@@ -103,3 +104,172 @@ def test_a_leader_basis_the_validator_could_not_see_is_refused(module, c):
     as_(module, TENANT)
     with pytest.raises(err(module), match="did not agree"):
         c.request_ruling(lid)
+
+
+# ── round 2 ──
+
+def _poison_look(prompt, images):
+    if any(b"POISON" in bytes(i) for i in images):
+        raise RuntimeError("INVALID_IMAGE")
+    return look_ok(len(images))
+
+
+def _landlord_no_baseline_photo(module, c, rooms, answers):
+    """Only the tenant holds a baseline photograph of R1."""
+    lid, ids = moved_out(module, c, baseline=False, tenant_photo=True)
+    ds = [deduct(module, c, lid, r, GEN, f"Holes in the wall {i}") for i, r in enumerate(rooms)]
+    as_(module, LANDLORD)
+    c.close_claims(lid)
+    as_(module, TENANT)
+    for d, a in zip(ds, answers):
+        c.answer_deduction(lid, d["deduction_id"], False, "It was like that.", a)
+    c.close_responses(lid)
+    return lid, ids, ds
+
+
+def test_tenant_bad_answer_photo_sets_aside_the_shared_baseline(module, c):
+    """MEDIUM: the tenant's runtime-rejected answer photo shares a prompt with
+    the tenant's baseline photo (a frozen, shared baseline item), so the
+    tenant's own bad file removes the only 'before' and defeats TENANT_DAMAGE."""
+    lid, ids, ds = _landlord_no_baseline_photo(module, c, ["R1"], [jfif(b"POISON")])
+    llm(look=_poison_look, judge=judgment(
+        {"D1": "TENANT_DAMAGE"}, {"D1": [ids["blt_r1"], ds[0]["photo"]]}))
+    as_(module, TENANT)
+    out = json.loads(c.request_ruling(lid))
+    assert out["deductions"][0]["to"] == "LANDLORD", out
+
+
+def test_first_reading_kept_lets_d1_poison_d2(module, c):
+    """MEDIUM: the shared baseline is read again beside D2 and read cleanly,
+    but the set-aside first reading (from D1's poisoned prompt) is kept."""
+    lid, ids, ds = _landlord_no_baseline_photo(module, c, ["R1", "R1"], [jfif(b"POISON"), b""])
+    llm(look=_poison_look, judge=judgment(
+        {"D1": "NOT_SHOWN", "D2": "TENANT_DAMAGE"},
+        {"D2": [ids["blt_r1"], ds[1]["photo"]]}))
+    as_(module, TENANT)
+    out = json.loads(c.request_ruling(lid))
+    to = {r["id"]: r["to"] for r in out["deductions"]}
+    assert to["D2"] == "LANDLORD", out
+
+
+def test_move_out_photo_never_beside_the_only_baseline_photo(module, c):
+    """LOW: with only the tenant's baseline photo, no prompt compares it with
+    the landlord's move-out photo."""
+    lid, ids, ds = _landlord_no_baseline_photo(module, c, ["R1"], [b""])
+    ctx = c._round_context(json.loads(c.leases[lid]), "RULING")
+    assert any(ids["blt_r1"] in g and ds[0]["photo"] in g for g in ctx["groups"]), ctx["groups"]
+
+
+
+
+def test_conceding_everything_an_appeal_contests_makes_it_moot(module, c):
+    """The tenant appeals D1; the landlord then withdraws D1. The tenant has what
+    they appealed for: the bond comes back and D2 settles on the standing ruling,
+    with no second round the landlord could use against D2."""
+    lid, ids, dids = disputed(module, c, n=2)
+    llm(look=look_ok(), judge=judgment(
+        {"D1": "TENANT_DAMAGE", "D2": "NOT_SHOWN"},
+        {"D1": [ids["bl_r1"], ids["out_D1"]]}))
+    as_(module, TENANT)
+    c.request_ruling(lid)
+    bond = int(lease(c, lid)["appeal_bond_wei"])
+    as_(module, TENANT, bond)
+    assert json.loads(c.open_appeal(lid, "The holes were there before."))["refused"] is False
+    assert lease(c, lid)["appeal"]["contested"] == ["D1"]
+    t0, l0 = claimable(c, TENANT), claimable(c, LANDLORD)
+    as_(module, LANDLORD)
+    c.withdraw_deduction(lid, "D1")
+    l = lease(c, lid)
+    assert l["state"] == "SETTLED" and l["appeal"]["result"] == "MOOT"
+    assert claimable(c, LANDLORD) == l0
+    assert claimable(c, TENANT) - t0 == 2 * GEN + bond
+    assert conserved(c, lid)
+
+
+def test_an_appeal_with_a_contested_point_left_still_runs(module, c):
+    """Only once nothing contested is left does an appeal end early."""
+    lid, ids, dids = disputed(module, c, n=2)
+    llm(look=look_ok(), judge=judgment(
+        {"D1": "TENANT_DAMAGE", "D2": "TENANT_DAMAGE"},
+        {"D1": [ids["bl_r1"], ids["out_D1"]], "D2": [ids["bl_r2"], ids["out_D2"]]}))
+    as_(module, TENANT)
+    c.request_ruling(lid)
+    bond = int(lease(c, lid)["appeal_bond_wei"])
+    as_(module, TENANT, bond)
+    c.open_appeal(lid, "Both were there before.")
+    as_(module, LANDLORD)
+    c.withdraw_deduction(lid, "D1")
+    assert lease(c, lid)["state"] == "APPEALED"
+    set_now("2026-10-01T10:00:01Z")
+    llm(look=look_ok(), judge=judgment({"D2": "FAIR_WEAR"}))
+    as_(module, TENANT)
+    out = json.loads(c.decide_appeal(lid))
+    assert out["result"] == "MOVED" and conserved(c, lid)
+
+
+# ── tests that pin the round-2 rules (each killed a surviving mutant) ──
+
+def test_a_photo_a_pair_fails_is_read_again_alone(module, c):
+    """The landlord filed no baseline photo of R1 and a move-out photo the runtime
+    refuses; the tenant's baseline photo shares its prompt. It is read again on
+    its own and still grounds the tenant's finding."""
+    lid, ids = moved_out(module, c, baseline=False, tenant_photo=True)
+    deduct(module, c, lid, "R1", GEN, "Holes in the wall", data=jfif(b"POISON"))
+    as_(module, LANDLORD)
+    c.close_claims(lid)
+    as_(module, TENANT)
+    c.answer_deduction(lid, "D1", False, "It was like that.", b"")
+    c.close_responses(lid)
+    llm(look=_poison_look,
+        judge=judgment({"D1": "PRE_EXISTING"}, {"D1": [ids["blt_r1"]]}))
+    as_(module, TENANT)
+    out = json.loads(c.request_ruling(lid))
+    assert out["deductions"][0]["finding"] == "PRE_EXISTING"
+
+
+def test_a_photo_set_aside_once_and_read_later_counts_as_read(module, c):
+    """Two deductions in R1 share its baseline photo. The first time it is put
+    to the node, the node says it cannot read it; the second time it reads it.
+    It counts as read."""
+    lid, ids, ds = _landlord_no_baseline_photo(module, c, ["R1", "R1"], [b"", b""])
+    seen = {"n": 0}
+    blt = c.get_image(ids["blt_r1"])
+
+    def look(prompt, images):
+        rows = []
+        for i, img in enumerate(images, start=1):
+            if bytes(img) == bytes(blt):
+                seen["n"] += 1
+                if seen["n"] <= 2:
+                    rows.append({"n": i, "readable": False, "shows": ""})
+                    continue
+            rows.append({"n": i, "readable": True, "shows": "A wall.", "marks": []})
+        return {"images": rows}
+
+    llm(look=look, judge=judgment(
+        {"D1": "PRE_EXISTING", "D2": "PRE_EXISTING"},
+        {"D1": [ids["blt_r1"]], "D2": [ids["blt_r1"]]}))
+    as_(module, TENANT)
+    out = json.loads(c.request_ruling(lid))
+    assert [r["finding"] for r in out["deductions"]] == ["PRE_EXISTING", "PRE_EXISTING"]
+
+
+def test_an_appeal_that_moves_only_what_it_did_not_contest_is_upheld(module, c):
+    """The tenant contests D1 only. The appeal leaves D1 with the landlord and D2
+    with the tenant, as before: nothing contested moved, so the bond is lost."""
+    lid, ids, dids = disputed(module, c, n=2)
+    llm(look=look_ok(), judge=judgment(
+        {"D1": "TENANT_DAMAGE", "D2": "FAIR_WEAR"}, {"D1": [ids["bl_r1"], ids["out_D1"]]}))
+    as_(module, TENANT)
+    c.request_ruling(lid)
+    bond = int(lease(c, lid)["appeal_bond_wei"])
+    as_(module, TENANT, bond)
+    c.open_appeal(lid, "D1 was there before.")
+    set_now("2026-10-01T10:00:01Z")
+    llm(look=look_ok(), judge=judgment(
+        {"D1": "TENANT_DAMAGE", "D2": "FAIR_WEAR"}, {"D1": [ids["bl_r1"], ids["out_D1"]]}))
+    l0 = claimable(c, LANDLORD)
+    as_(module, TENANT)
+    out = json.loads(c.decide_appeal(lid))
+    assert out["result"] == "UPHELD"
+    assert claimable(c, LANDLORD) - l0 == GEN + bond
