@@ -266,3 +266,28 @@ def test_a_photograph_is_read_alone_once_however_many_deductions_cite_its_room(m
     c.close_responses(lid)
     ctx = c._round_context(json.loads(c.leases[lid]), "RULING")
     assert sum(g == [ids["blt_r1"]] for g in ctx["groups"]) == 1, ctx["groups"]
+
+
+# ── round 4 ──
+
+def test_a_tenant_side_finding_on_a_photo_one_validator_missed_still_agrees(module, c):
+    """The leader finds the mark already there, citing the tenant's move-in
+    photograph; a validator that could not read that photograph finds it not
+    shown. Both return the deduction to the tenant, so they agree: only tenant
+    damage must stand on what each validator itself saw."""
+    lid, ids = in_tenancy(module, c, baseline=False, tenant_photo=True)
+    as_(module, TENANT)
+    c.end_tenancy(lid)
+    deduct(module, c, lid, "R1", GEN)
+    as_(module, LANDLORD)
+    c.close_claims(lid)
+    as_(module, TENANT)
+    c.answer_deduction(lid, "D1", False, "It was there at move-in.", b"")
+    c.close_responses(lid)
+    blind = {"images": [{"n": 1, "readable": False, "shows": ""}, {"n": 2, "readable": True, "shows": "A wall."}]}
+    llm(look=look_ok(2), judge=judgment({"D1": "PRE_EXISTING"}, {"D1": [ids["blt_r1"]]}),
+        v_look=[blind, {"images": [{"n": 1, "readable": False, "shows": ""}]}],
+        v_judge=judgment({"D1": "NOT_SHOWN"}))
+    as_(module, TENANT)
+    out = json.loads(c.request_ruling(lid))
+    assert out["deductions"][0] == {"id": "D1", "finding": "PRE_EXISTING", "to": "TENANT"}

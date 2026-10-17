@@ -205,7 +205,7 @@ class TestTheSecondRound:
         appeal(module, c, lid)
         set_now("2026-10-01T10:00:01Z")
         llm(look=look_ok(), judge=judgment({"D1": "FAIR_WEAR"}),
-            v_judge=judgment({"D1": "NOT_SHOWN"}))
+            v_judge=judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)))
         as_(module, TENANT)
         with pytest.raises(err(module), match="did not agree"):
             c.decide_appeal(lid)

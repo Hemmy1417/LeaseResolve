@@ -140,11 +140,29 @@ class TestConsensus:
                  v_judge=judgment({"D1": "PRE_EXISTING"}, {"D1": [ids["bl_r1"]]}))
         assert lease(c, lid)["state"] == "AWAITING_RULING" and lease(c, lid)["round_count"] == 0
 
-    def test_two_tenant_side_findings_must_still_match(self, module, c):
+    def test_two_tenant_side_findings_agree_on_the_money(self, module, c):
+        """Fair wear and not shown both return the deduction to the tenant: the
+        validators agree, and the record keeps the leader's word for it, marked
+        as not bound."""
+        lid, ids, _ = disputed(module, c, n=1)
+        out = rule(module, c, lid, judgment({"D1": "FAIR_WEAR"}), v_judge=judgment({"D1": "NOT_SHOWN"}))
+        assert out["deductions"][0] == {"id": "D1", "finding": "FAIR_WEAR", "to": "TENANT"}
+        row = json.loads(c.get_round(lid, 1))["deductions"][0]
+        assert row["finding_bound"] is False
+
+    def test_damage_against_not_damage_fails_the_round(self, module, c):
         lid, ids, _ = disputed(module, c, n=1)
         with pytest.raises(err(module), match="did not agree"):
+            rule(module, c, lid, judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)),
+                 v_judge=judgment({"D1": "FAIR_WEAR"}))
+        with pytest.raises(err(module), match="did not agree"):
             rule(module, c, lid, judgment({"D1": "FAIR_WEAR"}),
-                 v_judge=judgment({"D1": "NOT_SHOWN"}))
+                 v_judge=judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)))
+
+    def test_an_agreed_damage_finding_is_bound(self, module, c):
+        lid, ids, _ = disputed(module, c, n=1)
+        rule(module, c, lid, judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)))
+        assert json.loads(c.get_round(lid, 1))["deductions"][0]["finding_bound"] is True
 
     def test_a_validator_whose_grounding_differs_disagrees(self, module, c):
         lid, ids, _ = disputed(module, c, n=1)
@@ -300,7 +318,7 @@ class TestSettlement:
         with pytest.raises(err(module), match="while the lease is settled"):
             c.finalize(lid)
 
-    def test_an_unobtainable_ruling_returns_to_the_tenant_at_the_long_stop(self, module, c):
+    def test_an_unobtainable_ruling_splits_at_the_long_stop(self, module, c):
         lid, _, _ = disputed(module, c, n=1)
         as_(module, STRANGER)
         set_now("2026-10-01T12:00:00Z")
@@ -309,9 +327,24 @@ class TestSettlement:
         set_now("2026-10-01T12:00:01Z")
         c.settle_unresolved(lid)
         l = lease(c, lid)
-        assert l["settled_how"] == "UNRESOLVED" and l["deductions"][0]["paid_to"] == "TENANT"
-        assert claimable(c, LANDLORD) == 0
-        assert claimable(c, TENANT) == DEPOSIT and conserved(c, lid)
+        assert l["settled_how"] == "UNRESOLVED" and l["deductions"][0]["paid_to"] == "SPLIT"
+        assert claimable(c, LANDLORD) == GEN // 2
+        assert claimable(c, TENANT) == 4 * GEN + GEN // 2 and conserved(c, lid)
+
+    def test_an_odd_wei_goes_to_the_tenant_at_the_long_stop(self, module, c):
+        lid, ids = in_tenancy(module, c)
+        as_(module, TENANT)
+        c.end_tenancy(lid)
+        deduct(module, c, lid, "R1", GEN + 1)
+        as_(module, LANDLORD)
+        c.close_claims(lid)
+        as_(module, TENANT)
+        c.answer_deduction(lid, "D1", False, "No.", b"")
+        c.close_responses(lid)
+        set_now("2026-10-01T12:00:01Z")
+        c.settle_unresolved(lid)
+        assert claimable(c, LANDLORD) == GEN // 2
+        assert claimable(c, TENANT) == 4 * GEN - 1 + GEN // 2 + 1 and conserved(c, lid)
 
     def test_a_late_ruling_still_lands_before_anyone_splits(self, module, c):
         lid, ids, _ = disputed(module, c, n=1)

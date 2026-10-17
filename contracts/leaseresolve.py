@@ -52,8 +52,12 @@ amount claimed, whole; every other finding returns it to the tenant. The
 deposit is the tenant's unless a deduction from it is established, so the
 burden is the landlord's, and no amount is ever produced by a model.
 
-A validator agrees with the leader only when it reaches the same finding on
-every disputed deduction. Prose is free to differ.
+A validator agrees with the leader only when it would pay every disputed
+deduction to the same side: tenant damage, or not. A finding of tenant
+damage must also stand on photographs the validator itself saw. Which of the
+four other findings a deduction is, all of which return it to the tenant, is
+the leading validator's reading, and the record says so. Prose is free to
+differ.
 
 Either party a ruling went against on any deduction may appeal once inside
 the appeal window, with a bond. Both parties may then file new evidence for
@@ -71,9 +75,11 @@ side that filed it. A node that could read none of a round's photographs does
 not vote.
 
 Nothing waits on anybody forever. A deduction no ruling could be obtained on
-by the long stop returns to the tenant, because a deduction is the
-landlord's to establish; an appeal nobody can decide lapses, the first ruling
-stands and the bond goes back. All value leaves through a pull ledger.
+by the long stop is split evenly. A photograph that some validators can read
+and others cannot can keep a round from agreeing, and either side can file
+one; an even split means the side that does gains at most half of what it
+stood to lose. An appeal nobody can decide lapses, the first ruling stands
+and the bond goes back. All value leaves through a pull ledger.
 """
 
 import hashlib
@@ -627,21 +633,22 @@ def _payee(finding: str) -> str:
 
 def _unconfirmed(theirs: dict, mine: dict, ids: list) -> str:
     """Why a validator cannot confirm the leader, or "". Each disputed
-    deduction's finding must be the same: it is what moves the money and it
-    is what the record keeps."""
+    deduction must go to the same side: that is what moves the money."""
     for did in ids:
-        if theirs.get(did) != mine.get(did):
+        if _payee(theirs.get(did)) != _payee(mine.get(did)) or theirs.get(did) not in FINDINGS:
             return f"{did}: the leader found {theirs.get(did)}, this validator {mine.get(did)}"
     return ""
 
 
 def _unsupported(theirs: dict, ctx: dict, read: set) -> str:
-    """Why the leader's cited basis does not hold up under this validator's own
-    reading, or "". The basis is written into the record, so a validator must
-    be able to stand behind it: every finding the leader made has to be
-    grounded by the leader's citations on the photographs THIS node saw."""
+    """Why the leader's tenant damage does not hold up under this validator's
+    own reading, or "". It is the one finding that moves money to the
+    landlord, so it must be grounded by the leader's citations on the
+    photographs THIS node saw."""
     basis = theirs.get("basis") if isinstance(theirs.get("basis"), dict) else {}
     for d in ctx["disputed"]:
+        if theirs["findings"].get(d["id"]) != "TENANT_DAMAGE":
+            continue
         cited = basis.get(d["id"])
         cited = [e for e in cited if isinstance(e, str)] if isinstance(cited, list) else []
         f = theirs["findings"].get(d["id"])
@@ -1656,7 +1663,10 @@ class LeaseResolve(gl.contract.Contract):
                      and e in ctx["meta"]][:12] if isinstance(basis_in.get(d["id"]), list) else []
             if _ground(f, cited, d["room_id"], ctx["meta"], read) != f:
                 raise gl.vm.UserError(bad)
+            # Validators bound the side; among the four findings that return
+            # a deduction to the tenant, the label is the leader's reading.
             rows.append({"id": d["id"], "room_id": d["room_id"], "finding": f,
+                         "finding_bound": f == "TENANT_DAMAGE",
                          "to": _payee(f), "amount_wei": d["amount_wei"], "basis": cited,
                          "note": _clean(notes_in.get(d["id"]), LINE_MAX)})
         return {"rows": rows, "reasoning": _clean(result.get("reasoning"), LONG_MAX)}
@@ -1708,16 +1718,21 @@ class LeaseResolve(gl.contract.Contract):
 
     @gl.public.write
     def settle_unresolved(self, lid: str) -> str:
-        """No ruling could be obtained by the long stop. A deduction is the
-        landlord's to establish, so each one still disputed returns to the
-        tenant; and since only the landlord's own photographs can be the ones a
-        round cannot read past, nobody gains by keeping a round from deciding."""
+        """No ruling could be obtained by the long stop: each disputed deduction
+        is split evenly, the odd wei to the tenant whose deposit it was. Either
+        side could be the one keeping a round from agreeing, so neither wins
+        outright by it."""
         lease = self._lease(lid)
         self._state(lease, "AWAITING_RULING")
         if _now() <= _parse_iso(lease["ruling_long_stop"]):
             _refuse("a ruling can still be requested; the long stop has not passed")
-        self._settle_disputed_by(lease, {d["id"]: "TENANT" for d in self._disputed(lease)},
-                                 "UNRESOLVED")
+        for d in self._disputed(lease):
+            landlord = int(d["amount_wei"]) // 2
+            d["state"] = "SETTLED"
+            d["paid_to"] = "SPLIT"
+            self._pay(lease, "LANDLORD", landlord)
+            self._pay(lease, "TENANT", int(d["amount_wei"]) - landlord)
+        self._settle(lease, "UNRESOLVED")
         self._save(lease)
         return json.dumps({"lease_id": lid, "state": "SETTLED"})
 
