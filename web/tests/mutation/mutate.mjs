@@ -109,9 +109,12 @@ const tests = { acts: "tests/acts.test.ts", present: "tests/present.test.ts" };
 
 const [MAJOR, MINOR] = process.versions.node.split(".").map(Number);
 const NEEDS_FLAG = MAJOR < 22 || (MAJOR === 22 && MINOR < 12);
+// A timezone away from UTC, so a date read in local time differs from one read
+// in UTC even on a CI runner whose clock is UTC.
+const BASE = { ...process.env, TZ: "Pacific/Auckland" };
 const ENV = NEEDS_FLAG
-  ? { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --experimental-require-module`.trim() }
-  : process.env;
+  ? { ...BASE, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --experimental-require-module`.trim() }
+  : BASE;
 
 function run(testFiles) {
   const r = spawnSync(NODE, [VITEST, "run", ...testFiles.split(" ")], { cwd: WEB, encoding: "utf8", env: ENV });
