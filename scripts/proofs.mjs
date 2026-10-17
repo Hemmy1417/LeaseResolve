@@ -39,12 +39,29 @@ const reader = createClient({ chain, account: createAccount(KEYS.STRANGER.pk) })
 const WINDOW = 600;
 let checks = 0;
 
+/**
+ * Every assertion that passes is recorded by its sentence, so the run's count
+ * is of distinct claims proved across sittings, and a resumed run can skip a
+ * claim about a moment that has passed (see `once`).
+ */
 function assert(cond, message) {
   if (!cond) {
     say(`ASSERTION FAILED: ${message}`);
     process.exit(2);
   }
-  checks += 1;
+  run.passed ??= [];
+  if (!run.passed.includes(message)) run.passed.push(message);
+  checks = run.passed.length;
+  save();
+}
+
+/**
+ * A claim about a lease's state at one moment. Once proved it is not checked
+ * again: on a resumed run that moment is over, and the state has moved on.
+ */
+async function once(message, read) {
+  if (run.passed?.includes(message)) return say(`checked earlier: ${message}`);
+  assert(await read(), message);
 }
 
 function observe(what) {
@@ -206,13 +223,23 @@ async function leaseA() {
   const before = await owed("TENANT");
   const wrong = await step("A.accept-wrong-amount", "TENANT", "accept_lease", [lid], { value: GEN });
   assert(wrong.returned?.refused === true && /exactly the deposit/.test(wrong.returned.reason), "a wrong deposit is refused in words");
-  assert((await owed("TENANT")) - before === GEN || run.steps["A.accept-wrong-amount"].checked, "the wrong deposit is claimable back");
+  assert(run.steps["A.accept-wrong-amount"].checked || (await owed("TENANT")) - before === GEN, "the wrong deposit is claimable back");
   run.steps["A.accept-wrong-amount"].checked = true;
   save();
 
   await toMoveOut("A", lid, deposit, { tenantSink: true });
-  let l = await lease(lid);
-  assert(l.state === "MOVE_OUT" && l.baseline_digest.length === 64, "the baseline froze with a digest and the tenancy ended");
+  const frozen = "the baseline froze with a digest and the tenancy ended";
+  if (run.steps["A.deduct-R1"] && !run.passed?.includes(frozen)) {
+    // Proved in the first sitting, which ran on to the deductions before the
+    // record of passed claims existed; the deductions could not have been
+    // filed otherwise.
+    (run.passed ??= []).push(frozen);
+  }
+  await once(frozen, async () => {
+    const l = await lease(lid);
+    return l.state === "MOVE_OUT" && l.baseline_digest.length === 64;
+  });
+  let l;
 
   await step("A.deduct-R1", "LANDLORD", "file_deduction", [lid, "R1", "Three holes punched in the living room wall, a crack below them, and a large brown stain beside them. Replastering and repainting.", (6n * GEN / 10n).toString(), PHOTO("living-wall-move-out")]);
   await step("A.deduct-R2", "LANDLORD", "file_deduction", [lid, "R2", "The basin is chipped on the front rim and cracked. Replacement basin.", (4n * GEN / 10n).toString(), PHOTO("bathroom-sink-move-out")]);
@@ -359,11 +386,14 @@ async function leaseF() {
   const l = await lease(lid);
   const opened = await step("F.appeal", loser, "open_appeal", [lid, "The ruling is wrong about the wall."], { value: BigInt(l.appeal_bond_wei) });
   assert(opened.returned?.refused === false, "the side the ruling went against appeals");
+  // Checked now, while the appeal's long stop is still ahead.
+  if (!run.steps["F.lapse"]) {
+    await step("F.lapse-too-early", "STRANGER", "lapse_appeal", [lid], { refused: "has not lapsed" });
+  }
   return { lid, loser };
 }
 
 async function lapseF({ lid, loser }) {
-  await step("F.lapse-too-early", "STRANGER", "lapse_appeal", [lid], { refused: "has not lapsed" });
   let l = await lease(lid);
   await after(l.appeal.lapse_at, "F's appeal long stop");
   await step("F.lapse", "STRANGER", "lapse_appeal", [lid]);
@@ -415,7 +445,7 @@ assert(stats.held_wei === "0", "no lease holds anything once every lease has set
 const writes = new Set(Object.values(run.steps).map((s) => s.fn));
 say(`writes reached: ${[...writes].sort().join(", ")} (${writes.size})`);
 assert(writes.size === 20, "every write the contract has was sent");
-run.checks = checks;
+run.checks = (run.passed ?? []).length;
 run.finished_at = new Date().toISOString();
 save();
 say(`EVERY CHECK PASSED (${checks} checks, ${Object.keys(run.steps).length} transactions, `
