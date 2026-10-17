@@ -1,0 +1,211 @@
+{
+  "address": "0xe8b8EB695431ef8a87D36027edad860a591fD3FD",
+  "writes": {
+    "accept_lease": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": true
+    },
+    "answer_deduction": {
+      "params": [
+        "lid",
+        "did",
+        "accept",
+        "statement",
+        "photo"
+      ],
+      "types": [
+        "string",
+        "string",
+        "bool",
+        "string",
+        "bytes"
+      ],
+      "payable": false
+    },
+    "cancel_lease": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "claim": {
+      "params": [],
+      "types": [],
+      "payable": false
+    },
+    "close_claims": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "close_responses": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "concede_deduction": {
+      "params": [
+        "lid",
+        "did"
+      ],
+      "types": [
+        "string",
+        "string"
+      ],
+      "payable": false
+    },
+    "confirm_baseline": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "create_lease": {
+      "params": [
+        "lease_json"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "decide_appeal": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "end_tenancy": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "file_deduction": {
+      "params": [
+        "lid",
+        "room_id",
+        "description",
+        "amount_wei",
+        "photo"
+      ],
+      "types": [
+        "string",
+        "string",
+        "string",
+        "string",
+        "bytes"
+      ],
+      "payable": false
+    },
+    "file_note": {
+      "params": [
+        "lid",
+        "meta_json",
+        "text"
+      ],
+      "types": [
+        "string",
+        "string",
+        "string"
+      ],
+      "payable": false
+    },
+    "file_photo": {
+      "params": [
+        "lid",
+        "meta_json",
+        "data"
+      ],
+      "types": [
+        "string",
+        "string",
+        "bytes"
+      ],
+      "payable": false
+    },
+    "finalize": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "lapse_appeal": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "open_appeal": {
+      "params": [
+        "lid",
+        "reason"
+      ],
+      "types": [
+        "string",
+        "string"
+      ],
+      "payable": true
+    },
+    "request_ruling": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "settle_unresolved": {
+      "params": [
+        "lid"
+      ],
+      "types": [
+        "string"
+      ],
+      "payable": false
+    },
+    "withdraw_deduction": {
+      "params": [
+        "lid",
+        "did"
+      ],
+      "types": [
+        "string",
+        "string"
+      ],
+      "payable": false
+    }
+  }
+}
