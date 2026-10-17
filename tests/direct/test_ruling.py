@@ -210,11 +210,25 @@ class TestConsensus:
                    look=[RuntimeError("gateway"), look_ok()])
         assert out["deductions"][0]["to"] == "LANDLORD"
 
-    def test_a_photograph_the_runtime_fails_twice_is_set_aside(self, module, c):
+    def test_a_node_that_reads_no_photograph_does_not_vote(self, module, c):
+        """The runtime fails every prompt: the node has seen nothing, so no round
+        can be decided on it. That is the node that received no images."""
         lid, ids, _ = disputed(module, c, n=1)
-        out = rule(module, c, lid, judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)),
-                   look=[RuntimeError("x"), RuntimeError("y")])
-        assert out["deductions"][0]["finding"] == "NOT_SHOWN"
+        with pytest.raises(err(module), match="did not agree"):
+            rule(module, c, lid, judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)),
+                 look=[RuntimeError("x"), RuntimeError("y")])
+
+    def test_a_photograph_the_runtime_fails_is_set_aside_and_the_rest_still_count(self, module, c):
+        lid, ids, _ = disputed(module, c, n=1, tenant_answer_photo=True)
+        answer = c.get_image(lease(c, lid)["deductions"][0]["answer_photo"])
+
+        def look(prompt, images):
+            if any(bytes(i) == bytes(answer) for i in images):
+                raise RuntimeError("INVALID_IMAGE")
+            return look_ok(len(images))
+
+        out = rule(module, c, lid, judgment({"D1": "TENANT_DAMAGE"}, damage_basis(ids)), look=look)
+        assert out["deductions"][0]["finding"] == "TENANT_DAMAGE"
 
 
 class TestTheBoundary:
@@ -286,7 +300,7 @@ class TestSettlement:
         with pytest.raises(err(module), match="while the lease is settled"):
             c.finalize(lid)
 
-    def test_an_unobtainable_ruling_splits_at_the_long_stop(self, module, c):
+    def test_an_unobtainable_ruling_returns_to_the_tenant_at_the_long_stop(self, module, c):
         lid, _, _ = disputed(module, c, n=1)
         as_(module, STRANGER)
         set_now("2026-10-01T12:00:00Z")
@@ -295,12 +309,9 @@ class TestSettlement:
         set_now("2026-10-01T12:00:01Z")
         c.settle_unresolved(lid)
         l = lease(c, lid)
-        assert l["settled_how"] == "SPLIT_UNRESOLVED" and l["deductions"][0]["paid_to"] == "SPLIT"
-        assert claimable(c, LANDLORD) == GEN // 2
-        assert claimable(c, TENANT) == 4 * GEN + GEN // 2 and conserved(c, lid)
-
-    def test_an_odd_wei_stays_with_the_tenant(self, module, c):
-        assert module._halves(7) == (3, 4) and module._halves(1) == (0, 1)
+        assert l["settled_how"] == "UNRESOLVED" and l["deductions"][0]["paid_to"] == "TENANT"
+        assert claimable(c, LANDLORD) == 0
+        assert claimable(c, TENANT) == DEPOSIT and conserved(c, lid)
 
     def test_a_late_ruling_still_lands_before_anyone_splits(self, module, c):
         lid, ids, _ = disputed(module, c, n=1)

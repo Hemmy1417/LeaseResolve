@@ -236,15 +236,18 @@ class TestTheLongStop:
         assert claimable(c, LANDLORD) == GEN and claimable(c, TENANT) == 4 * GEN + b
         assert conserved(c, lid)
 
-    def test_an_appeal_mooted_by_a_concession_returns_the_bond(self, module, c):
+    def test_nothing_is_given_up_while_an_appeal_is_pending(self, module, c):
+        """The appeal round decides what it covers: a concession mid-appeal could
+        otherwise moot it, abandon it for free, or take its bond."""
         lid, _ = ruled_for_landlord(module, c)
-        b = bond(c, lid)
         appeal(module, c, lid)
         as_(module, LANDLORD)
-        c.withdraw_deduction(lid, "D1")
-        l = lease(c, lid)
-        assert l["state"] == "SETTLED" and l["appeal"]["result"] == "MOOT"
-        assert claimable(c, TENANT) == DEPOSIT + b and conserved(c, lid)
+        with pytest.raises(err(module), match="while the lease is appealed"):
+            c.withdraw_deduction(lid, "D1")
+        as_(module, TENANT)
+        with pytest.raises(err(module), match="while the lease is appealed"):
+            c.concede_deduction(lid, "D1")
+        assert lease(c, lid)["state"] == "APPEALED" and conserved(c, lid)
 
     def test_a_ruled_lease_cannot_be_finalized_while_appealed(self, module, c):
         lid, _ = ruled_for_landlord(module, c)

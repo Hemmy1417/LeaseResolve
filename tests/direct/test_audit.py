@@ -162,51 +162,6 @@ def test_move_out_photo_never_beside_the_only_baseline_photo(module, c):
 
 
 
-def test_conceding_everything_an_appeal_contests_makes_it_moot(module, c):
-    """The tenant appeals D1; the landlord then withdraws D1. The tenant has what
-    they appealed for: the bond comes back and D2 settles on the standing ruling,
-    with no second round the landlord could use against D2."""
-    lid, ids, dids = disputed(module, c, n=2)
-    llm(look=look_ok(), judge=judgment(
-        {"D1": "TENANT_DAMAGE", "D2": "NOT_SHOWN"},
-        {"D1": [ids["bl_r1"], ids["out_D1"]]}))
-    as_(module, TENANT)
-    c.request_ruling(lid)
-    bond = int(lease(c, lid)["appeal_bond_wei"])
-    as_(module, TENANT, bond)
-    assert json.loads(c.open_appeal(lid, "The holes were there before."))["refused"] is False
-    assert lease(c, lid)["appeal"]["contested"] == ["D1"]
-    t0, l0 = claimable(c, TENANT), claimable(c, LANDLORD)
-    as_(module, LANDLORD)
-    c.withdraw_deduction(lid, "D1")
-    l = lease(c, lid)
-    assert l["state"] == "SETTLED" and l["appeal"]["result"] == "MOOT"
-    assert claimable(c, LANDLORD) == l0
-    assert claimable(c, TENANT) - t0 == 2 * GEN + bond
-    assert conserved(c, lid)
-
-
-def test_an_appeal_with_a_contested_point_left_still_runs(module, c):
-    """Only once nothing contested is left does an appeal end early."""
-    lid, ids, dids = disputed(module, c, n=2)
-    llm(look=look_ok(), judge=judgment(
-        {"D1": "TENANT_DAMAGE", "D2": "TENANT_DAMAGE"},
-        {"D1": [ids["bl_r1"], ids["out_D1"]], "D2": [ids["bl_r2"], ids["out_D2"]]}))
-    as_(module, TENANT)
-    c.request_ruling(lid)
-    bond = int(lease(c, lid)["appeal_bond_wei"])
-    as_(module, TENANT, bond)
-    c.open_appeal(lid, "Both were there before.")
-    as_(module, LANDLORD)
-    c.withdraw_deduction(lid, "D1")
-    assert lease(c, lid)["state"] == "APPEALED"
-    set_now("2026-10-01T10:00:01Z")
-    llm(look=look_ok(), judge=judgment({"D2": "FAIR_WEAR"}))
-    as_(module, TENANT)
-    out = json.loads(c.decide_appeal(lid))
-    assert out["result"] == "MOVED" and conserved(c, lid)
-
-
 # ── tests that pin the round-2 rules (each killed a surviving mutant) ──
 
 def test_a_photo_a_pair_fails_is_read_again_alone(module, c):
@@ -273,3 +228,41 @@ def test_an_appeal_that_moves_only_what_it_did_not_contest_is_upheld(module, c):
     out = json.loads(c.decide_appeal(lid))
     assert out["result"] == "UPHELD"
     assert claimable(c, LANDLORD) - l0 == GEN + bond
+
+
+# ── round 3 ──
+
+def test_a_garbled_reading_of_ones_own_photo_does_not_block_the_ruling(module, c):
+    """A move-out photograph whose readings come back garbled is set aside; the
+    round is still decided on the rest, so no side can force the long stop."""
+    lid, ids = moved_out(module, c)
+    deduct(module, c, lid, "R1", GEN, "Holes", data=jfif(b"STEER"))
+    as_(module, LANDLORD)
+    c.close_claims(lid)
+    as_(module, TENANT)
+    c.answer_deduction(lid, "D1", False, "Nothing is wrong.", b"")
+    c.close_responses(lid)
+
+    def look(prompt, images):
+        if any(b"STEER" in bytes(i) for i in images):
+            return {"images": [{"n": n, "readable": "yes", "shows": "x"} for n in range(1, len(images) + 1)]}
+        return look_ok(len(images))
+
+    llm(look=look, judge=judgment({"D1": "NOT_SHOWN"}))
+    as_(module, TENANT)
+    out = json.loads(c.request_ruling(lid))
+    assert out["deductions"][0]["to"] == "TENANT"
+
+
+def test_a_photograph_is_read_alone_once_however_many_deductions_cite_its_room(module, c):
+    lid, ids = moved_out(module, c, tenant_photo=True)
+    deduct(module, c, lid, "R1", GEN, "Holes one")
+    deduct(module, c, lid, "R1", GEN, "Holes two")
+    as_(module, LANDLORD)
+    c.close_claims(lid)
+    as_(module, TENANT)
+    c.answer_deduction(lid, "D1", False, "No.", b"")
+    c.answer_deduction(lid, "D2", False, "No.", b"")
+    c.close_responses(lid)
+    ctx = c._round_context(json.loads(c.leases[lid]), "RULING")
+    assert sum(g == [ids["blt_r1"]] for g in ctx["groups"]) == 1, ctx["groups"]
