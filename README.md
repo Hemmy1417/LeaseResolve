@@ -6,7 +6,7 @@
 
 A landlord and a tenant agree a lease, photograph every room before the tenancy starts, and freeze that record. At move-out the landlord claims deductions, each with a photograph; whatever is not claimed goes back to the tenant at once. Disputed deductions go to GenLayer validators, who each read the stored photographs themselves and must agree on one question per deduction: is this tenant damage? Plain code does the money.
 
-Live app: *(Vercel link added on deploy)*
+Live app: https://lease-resolve.vercel.app
 
 ## What it is
 
