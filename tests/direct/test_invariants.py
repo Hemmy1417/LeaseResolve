@@ -3,6 +3,7 @@ every moment, two leases at once, and after each step check what must always
 hold: no wei made or lost, a settled lease never changes again, and the
 contract never owes more than it was paid."""
 import json
+import os
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -104,7 +105,7 @@ def contract_owes(c):
     return owed + held
 
 
-@pytest.mark.parametrize("seed", range(120))
+@pytest.mark.parametrize("seed", range(int(os.environ.get("LEASERESOLVE_WALK_SEEDS", "120"))))
 def test_a_random_walk_keeps_every_invariant(module, c, seed):
     rng = random.Random(seed)
     paid_in = 0

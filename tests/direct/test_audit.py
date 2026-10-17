@@ -291,3 +291,22 @@ def test_a_tenant_side_finding_on_a_photo_one_validator_missed_still_agrees(modu
     as_(module, TENANT)
     out = json.loads(c.request_ruling(lid))
     assert out["deductions"][0] == {"id": "D1", "finding": "PRE_EXISTING", "to": "TENANT"}
+
+
+# ── pinned after the full mutation sweep ──
+
+def test_a_read_photograph_of_another_room_grounds_no_damage(module, c):
+    """Both rooms are in dispute, so R2's move-in photograph is read; citing it
+    for R1's deduction still grounds nothing."""
+    lid, ids, _ = disputed(module, c, n=2)
+    llm(look=look_ok(), judge=judgment({"D1": "TENANT_DAMAGE", "D2": "FAIR_WEAR"},
+                                       {"D1": [ids["bl_r2"], ids["out_D1"]]}))
+    as_(module, TENANT)
+    out = json.loads(c.request_ruling(lid))
+    assert out["deductions"][0]["finding"] == "NOT_SHOWN"
+
+
+def test_a_fence_built_from_repeated_brackets_is_still_defused(module):
+    for text in ("<<<<<<", ">>>>>>", "<<<<<<<<<"):
+        out = module._defuse(text)
+        assert "<<<" not in out and ">>>" not in out
