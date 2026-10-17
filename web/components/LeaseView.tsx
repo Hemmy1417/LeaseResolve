@@ -10,8 +10,7 @@ import { ActPanel } from "./ActPanel";
 import { Card, Dotted, StoredPhoto, Tag, TextLink } from "./bits";
 import { useEffect, useState } from "react";
 
-import { roleOf } from "@/lib/acts";
-import { addressUrl, sameAddress } from "@/lib/chain";
+import { sameAddress } from "@/lib/chain";
 import {
   appealResult, day, deductionName, deductionState, finding, findingSaid, gen, genText, itemName,
   leaseName, leaseState, moment, phase, plural, prose, role as roleWord, roomName, settledHow,
@@ -282,7 +281,6 @@ function Activity({ lease }: { lease: Lease }) {
 export function LeaseView({ lease }: { lease: Lease }) {
   const wallet = useWallet();
   const nowMs = useNow();
-  const me = roleOf(lease, wallet.address);
   const live = lease.deductions.filter((d) => d.state !== "WITHDRAWN" || d.paid_to);
   const rooms = lease.rooms.map((r) => r.id);
   const paidOut = BigInt(lease.paid_landlord_wei) + BigInt(lease.paid_tenant_wei);
@@ -383,8 +381,7 @@ export function LeaseView({ lease }: { lease: Lease }) {
 
           <Activity lease={lease} />
           <p className="text-[13px] text-basalt">
-            Read straight from the contract. <TextLink href={addressUrl(lease.landlord)} external>The landlord on the explorer</TextLink>
-            {me ? ` · You are signed in as the ${roleWord(me).toLowerCase()}.` : ""}
+            Read straight from the contract. <TextLink href="/verify">How to check it yourself</TextLink>
           </p>
         </div>
         <div className="lg:sticky lg:top-28">

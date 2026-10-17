@@ -56,7 +56,9 @@ body {
 }
 
 /* No weight but 500 in body text, anywhere. */
-b, strong { font-weight: 500; }
+@layer base {
+  b, strong { font-weight: 500; }
+}
 
 .display {
   font-family: var(--font-display);
@@ -121,7 +123,9 @@ input[type="file"].field::file-selector-button {
 }
 .on-dark input[type="file"].field::file-selector-button { background: var(--color-chalk); color: var(--color-obsidian); }
 
-a { color: inherit; }
+@layer base {
+  a { color: inherit; }
+}
 ::selection { background: var(--color-sulfur); color: var(--color-obsidian); }
 
 @media (prefers-reduced-motion: no-preference) {
